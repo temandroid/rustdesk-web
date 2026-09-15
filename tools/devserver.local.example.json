@@ -1,0 +1,5 @@
+{
+  "upstream": "rd.example.com",
+  "key": "<base64 ed25519 public key from id_ed25519.pub>",
+  "port": 5179
+}

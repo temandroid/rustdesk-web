@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <!--
+    Replaced by flutter build --base-href. Must start and end with "/".
+  -->
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <meta name="description" content="RustDesk remote desktop in the browser.">
+
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="RustDesk">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>RustDesk</title>
+  <link rel="manifest" href="manifest.json">
+
+  <!--
+    The open web core must be a classic script loaded synchronously BEFORE
+    flutter_bootstrap.js: flutter/lib/web/common.dart calls isMobile() and
+    getByName() while Dart top-level finals are evaluated.
+  -->
+  <script src="js/rustdesk-web-core.js"></script>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #f7f7f7; }
+    .loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+    .loader { width: 64px; height: 64px; border: 6px solid #e0e0e0; border-top-color: #024eff; border-radius: 50%; animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="loading"><div class="loader"></div></div>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>

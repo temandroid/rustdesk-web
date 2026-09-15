@@ -1,0 +1,38 @@
+{
+  "name": "rustdesk-web-core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Open TypeScript viewer core for the RustDesk Flutter web shell (relay-only MVP)",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "gen-proto": "node scripts/gen-proto.mjs && node scripts/gen-lang.mjs && node scripts/gen-keycodes.mjs",
+    "build": "npm run gen-proto && tsc --noEmit && vite build",
+    "watch": "vite build --watch",
+    "test": "vitest run",
+    "sync": "node scripts/sync-to-flutter.mjs",
+    "smoke": "tsx tools/smoke.ts",
+    "serve": "node tools/devserver.mjs"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.14.1",
+    "fzstd": "^0.1.1",
+    "libsodium-wrappers-sumo": "^0.8.4"
+  },
+  "devDependencies": {
+    "@bufbuild/buf": "^1.72.0",
+    "@bufbuild/protoc-gen-es": "^2.14.1",
+    "@types/dom-webcodecs": "^0.1.19",
+    "@types/libsodium-wrappers-sumo": "^0.7.8",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.6",
+    "vitest": "^4.1.11",
+    "ws": "^8.21.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/quietlydismantled/rustdesk-web-core"
+  }
+}

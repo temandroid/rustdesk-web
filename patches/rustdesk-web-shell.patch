@@ -1,0 +1,37 @@
+diff --git a/flutter/lib/common/widgets/toolbar.dart b/flutter/lib/common/widgets/toolbar.dart
+index c3896b0..e34ed53 100644
+--- a/flutter/lib/common/widgets/toolbar.dart
++++ b/flutter/lib/common/widgets/toolbar.dart
+@@ -503,6 +503,15 @@ List<TTextMenu> toolbarControls(BuildContext context, String id, FFI ffi) {
+           }),
+     );
+   }
++  // Web: file transfer opens as a page on top of the remote page. No conn
++  // token on web (sessionGetConnToken is not implemented in the web bridge).
++  if (isDefaultConn && isWebDesktop) {
++    v.add(
++      TTextMenu(
++          child: Text(translate('Transfer file')),
++          onPressed: () => connect(context, id, isFileTransfer: true)),
++    );
++  }
+   // divider
+   if (isDefaultConn && (isDesktop || isWebDesktop)) {
+     v.add(TTextMenu(child: Offstage(), onPressed: () {}, divider: true));
+diff --git a/flutter/lib/desktop/pages/file_manager_page.dart b/flutter/lib/desktop/pages/file_manager_page.dart
+index 17674c2..fcad1cf 100644
+--- a/flutter/lib/desktop/pages/file_manager_page.dart
++++ b/flutter/lib/desktop/pages/file_manager_page.dart
+@@ -147,7 +147,11 @@ class _FileManagerPageState extends State<FileManagerPage>
+     if (isWeb) {
+       return WillPopScope(
+         onWillPop: () async {
+-          clientClose(_ffi.sessionId, _ffi);
++          // Web: the file manager may sit on top of a live remote page, so
++          // pop only this route instead of closeConnection() (pops to root).
++          msgBox(_ffi.sessionId, 'info', 'Close',
++              'Are you sure to close the connection?', '', _ffi.dialogManager,
++              onSubmit: () => Navigator.of(context).pop());
+           return false;
+         },
+         child: child,

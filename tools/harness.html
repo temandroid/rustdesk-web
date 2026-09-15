@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>web-core harness</title>
+<style>
+  body { font: 13px system-ui, sans-serif; margin: 0; background: #111; color: #ddd; display: flex; flex-direction: column; height: 100vh; }
+  #bar { display: flex; gap: 6px; padding: 6px; background: #222; align-items: center; flex-wrap: wrap; }
+  #bar input { background: #000; color: #eee; border: 1px solid #444; padding: 4px; }
+  #bar button { padding: 4px 10px; }
+  #stage { flex: 1; position: relative; overflow: hidden; background: #000; }
+  canvas { position: absolute; left: 0; top: 0; max-width: 100%; max-height: 100%; outline: none; }
+  #log { height: 140px; overflow: auto; background: #000; color: #9f9; font: 11px monospace; padding: 4px; white-space: pre-wrap; }
+  #status { margin-left: auto; color: #fc6; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <input id="server" placeholder="ID server host" size="24">
+  <input id="key" placeholder="server key (base64)" size="44">
+  <input id="id" placeholder="peer ID" size="12">
+  <input id="pw" placeholder="password" type="password" size="12">
+  <label><input id="wss" type="checkbox" checked> wss</label>
+  <button id="connect">Connect</button>
+  <button id="close">Close</button>
+  <button id="refresh">Refresh</button>
+  <button id="cad">Ctrl+Alt+Del</button>
+  <span id="status">idle</span>
+</div>
+<div id="stage"><canvas id="c" tabindex="0" width="1280" height="720"></canvas></div>
+<div id="log"></div>
+<script src="../dist/rustdesk-web-core.js"></script>
+<script>
+const $ = (s) => document.querySelector(s);
+const logEl = $("#log");
+function log(...a) {
+  logEl.textContent += a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" ") + "\n";
+  logEl.scrollTop = logEl.scrollHeight;
+}
+const canvas = $("#c");
+const ctx = canvas.getContext("2d");
+let displays = [];
+let cur = 0;
+let frames = 0;
+
+// --- Dart-side contract mocks --------------------------------------------
+window.onInitFinished = () => {
+  log("init finished; version", getByName("version"), "codecs", getByName("alternative_codecs"));
+  $("#status").textContent = "ready";
+  for (const k of ["custom-rendezvous-server", "key"]) {
+    const v = getByName("option", k);
+    if (v) (k === "key" ? $("#key") : $("#server")).value = v;
+  }
+};
+window.onGlobalEvent = (json) => {
+  const e = JSON.parse(json);
+  if (e.name === "update_quality_status") { $("#status").textContent = `fps ${e.fps} delay ${e.delay}ms bitrate ${e.target_bitrate}`; return; }
+  log("[event]", e.name, json.length > 400 ? json.slice(0, 400) + "..." : json);
+  if (e.name === "msgbox") {
+    if (e.type.includes("insecure-connection")) {
+      if (confirm("Insecure connection (identity not verified). Continue?")) setByName("common", JSON.stringify({ name: "continue-insecure-connection", value: "Y" }));
+      else setByName("common", JSON.stringify({ name: "continue-insecure-connection", value: "N" }));
+    } else if (e.type === "input-password" || e.type === "re-input-password") {
+      const p = prompt(e.title + " " + e.text);
+      if (p !== null) setByName("login", JSON.stringify({ os_username: "", os_password: "", password: p, remember: false }));
+    } else if (e.type === "input-2fa") {
+      const c = prompt("2FA code");
+      if (c !== null) setByName("send_2fa", JSON.stringify({ code: c, trust_this_device: false }));
+    }
+  }
+  if (e.name === "peer_info") {
+    displays = JSON.parse(e.displays);
+    cur = parseInt(e.current_display) || 0;
+    const d = displays[cur];
+    if (d) { canvas.width = d.width; canvas.height = d.height; }
+    canvas.focus();
+  }
+  if (e.name === "switch_display") {
+    cur = parseInt(e.display);
+    canvas.width = parseInt(e.width); canvas.height = parseInt(e.height);
+  }
+};
+window.onRegisteredEvent = (json) => log("[global]", json.slice(0, 200));
+let loggedFrame = false;
+window.onVideoFrame = (display, frame) => {
+  try {
+    if (!loggedFrame) {
+      loggedFrame = true;
+      log(`FRAME display=${display} displaySize=${frame.displayWidth}x${frame.displayHeight} coded=${frame.codedWidth}x${frame.codedHeight} visibleRect=${JSON.stringify(frame.visibleRect)} format=${frame.format} | peer displays=${JSON.stringify(displays)} | canvas=${canvas.width}x${canvas.height} dpr=${devicePixelRatio}`);
+    }
+    if (display === cur) {
+      if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+        canvas.width = frame.displayWidth; canvas.height = frame.displayHeight;
+      }
+      ctx.drawImage(frame, 0, 0);
+      frames++;
+    }
+  } finally { frame.close(); }
+};
+window.onRgba = (display, rgba) => {
+  const d = displays[display]; if (!d) return;
+  const img = new ImageData(new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength), d.width, d.height);
+  ctx.putImageData(img, 0, 0);
+};
+
+// --- UI ------------------------------------------------------------------
+$("#connect").onclick = () => {
+  const server = $("#server").value.trim();
+  setByName("option", JSON.stringify({ name: "custom-rendezvous-server", value: server }));
+  setByName("option", JSON.stringify({ name: "key", value: $("#key").value.trim() }));
+  // In proxy mode (ws:// origin) leave api-server as the dev server seeded it.
+  if (!/^wss?:\/\//i.test(server)) {
+    setByName("option", JSON.stringify({ name: "api-server", value: $("#wss").checked ? "https://" + server : "" }));
+  }
+  log("access_token present:", getByName("option:local", "access_token") ? "yes" : "no");
+  const r = setByName("session_add_sync", JSON.stringify({ id: $("#id").value.trim(), password: $("#pw").value, is_shared_password: false, isFileTransfer: false, isViewCamera: false, isTerminal: false }));
+  if (r) { log("session_add_sync:", r); return; }
+  setByName("session_start", JSON.stringify({ id: $("#id").value.trim() }));
+  $("#status").textContent = "connecting";
+};
+$("#close").onclick = () => { setByName("session_close"); $("#status").textContent = "closed"; };
+$("#refresh").onclick = () => setByName("refresh");
+$("#cad").onclick = () => setByName("ctrl_alt_del");
+
+function pos(ev) {
+  const r = canvas.getBoundingClientRect();
+  const x = Math.round((ev.clientX - r.left) * canvas.width / r.width);
+  const y = Math.round((ev.clientY - r.top) * canvas.height / r.height);
+  const d = displays[cur] || { x: 0, y: 0 };
+  return { x: String(x + d.x), y: String(y + d.y) };
+}
+function mods(ev, o) { if (ev.altKey) o.alt = "true"; if (ev.ctrlKey) o.ctrl = "true"; if (ev.shiftKey) o.shift = "true"; if (ev.metaKey) o.command = "true"; return o; }
+const btn = (b) => (b === 0 ? "left" : b === 2 ? "right" : b === 1 ? "wheel" : b === 3 ? "back" : "forward");
+canvas.addEventListener("mousemove", (ev) => setByName("send_mouse", JSON.stringify(mods(ev, pos(ev)))));
+canvas.addEventListener("mousedown", (ev) => { canvas.focus(); setByName("send_mouse", JSON.stringify(mods(ev, { type: "down", buttons: btn(ev.button), ...pos(ev) }))); });
+canvas.addEventListener("mouseup", (ev) => setByName("send_mouse", JSON.stringify(mods(ev, { type: "up", buttons: btn(ev.button), ...pos(ev) }))));
+canvas.addEventListener("contextmenu", (ev) => ev.preventDefault());
+canvas.addEventListener("wheel", (ev) => { ev.preventDefault(); setByName("send_mouse", JSON.stringify(mods(ev, { type: "wheel", x: String(Math.sign(ev.deltaX)), y: String(-Math.sign(ev.deltaY)) }))); }, { passive: false });
+
+const VK = { Enter: "VK_RETURN", Backspace: "VK_BACK", Tab: "VK_TAB", Escape: "VK_ESCAPE", " ": "VK_SPACE", ArrowLeft: "VK_LEFT", ArrowRight: "VK_RIGHT", ArrowUp: "VK_UP", ArrowDown: "VK_DOWN", Delete: "VK_DELETE", Insert: "VK_INSERT", Home: "VK_HOME", End: "VK_END", PageUp: "VK_PRIOR", PageDown: "VK_NEXT", Shift: "VK_SHIFT", Control: "VK_CONTROL", Alt: "VK_MENU", Meta: "Meta", CapsLock: "VK_CAPITAL" };
+function keyName(ev) {
+  if (VK[ev.key]) return VK[ev.key];
+  if (/^F\d{1,2}$/.test(ev.key)) return "VK_" + ev.key;
+  if (ev.key.length === 1) return ev.key;
+  return null;
+}
+function keyEv(ev, down) {
+  const name = keyName(ev); if (!name) return;
+  ev.preventDefault();
+  const o = mods(ev, { name });
+  if (down) o.down = "true";
+  setByName("input_key", JSON.stringify(o));
+}
+canvas.addEventListener("keydown", (ev) => keyEv(ev, true));
+canvas.addEventListener("keyup", (ev) => keyEv(ev, false));
+
+init();
+</script>
+</body>
+</html>
