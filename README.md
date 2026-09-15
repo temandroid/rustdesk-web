@@ -21,7 +21,14 @@ Scope of this MVP (relay-only):
   otherwise browser downloads), upload from a file/folder picker, delete,
   create folder, rename, cancel, overwrite confirmation
 
-Not yet: WebRTC P2P, audio, terminal, port forward, transfer resume.
+- WebRTC P2P (data channel): the offer rides in the punch request, ICE
+  candidates trickle through the ID server, a P2P result is preferred over an
+  established relay within RustDesk's 2.5 s window, and the peer's signed DTLS
+  fingerprint is bound to its identity (fail closed, fall back to relay).
+  Needs a peer and an ID server built after RustDesk PR #15684 (September
+  2026); older ones ignore the offer and the session stays on the relay.
+
+Not yet: audio, terminal, port forward, transfer resume.
 
 ## Layout
 
@@ -34,6 +41,9 @@ src/index.ts                installs window.init / isMobile / setByName / getByN
 src/bridge.ts               name -> handler tables, event channels (onGlobalEvent, onRegisteredEvent)
 src/session.ts              relay-only session state machine (port of src/client.rs + io_loop.rs)
 src/transport/ws.ts         one WS binary message == one protobuf; secretbox after set_key
+src/transport/webrtc.ts     RTCPeerConnection data channel "bootstrap", 1-byte fragment framing (webrtc.rs)
+src/sessions.ts             concurrent remote + file-transfer sessions, per-page callback capture
+src/filetransfer.ts, src/clipboard.ts
 src/crypto.ts               libsodium: sign_open, box seal (zero nonce), secretbox with LE u64 counter nonce
 src/video/webcodecs.ts      per-display VideoDecoder, zero-copy handoff to Dart or RGBA fallback
 src/input/{mouse,keyboard}.ts
@@ -143,6 +153,20 @@ in `src/bridge.ts`. Events go out as JSON strings with every value a string:
 `update_quality_status`, ...) and `onRegisteredEvent` for `load_recent_peers`,
 `load_fav_peers`, `callback_query_onlines`.
 
+## WebRTC notes
+
+- ICE servers come from the global option `ice-servers` (comma separated
+  `stun:`/`turn://user:pass@host:port` URLs, same as Rust); the four public
+  STUN servers RustDesk uses are added when no STUN entry is configured.
+- The offer is a trickle offer (`webrtc://` + base64 JSON `{type, sdp,
+  ice_policy: "all"}`); candidates go as `IceCandidate{id, session_key,
+  candidate}` on the same rendezvous socket the punch request used, re-sent once
+  after 400 ms; the peer's candidates arrive there too.
+- `tools/webrtc-loopback.html` (served by the `harness` server) exercises the
+  transport with an offerer and answerer in one page.
+- Toggle: Settings -> General -> "Enable WebRTC P2P connection" (local option
+  `enable-webrtc`; unset means on).
+
 ## Provenance of protocol facts
 
 - WebSocket framing / URL mapping: `hbb_common/src/websocket.rs`
@@ -152,3 +176,5 @@ in `src/bridge.ts`. Events go out as JSON strings with every value a string:
 - event field names: `src/flutter.rs`
 - mouse mask: `src/flutter_ffi.rs` `session_send_mouse`
 - online states bitmask: `src/client.rs` (`0x01 << (7 - i % 8)`)
+- WebRTC: `hbb_common/src/webrtc.rs` (envelope, framing, fingerprint), `src/client.rs`
+  (`spawn_webrtc_ice_bridge`, `race_transports_prefer_webrtc`, `secure_connection`)

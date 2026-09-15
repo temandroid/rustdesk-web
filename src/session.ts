@@ -6,6 +6,7 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { decompress as zstdDecompress } from "fzstd";
 import {
   ConnType,
+  IceCandidateSchema,
   IdPkSchema,
   NatType,
   PunchHoleRequestSchema,
@@ -43,6 +44,7 @@ import {
   type Hash,
 } from "./proto/message_pb";
 import { WsStream, WsTimeoutError, buildWsUrlCandidates, connectFirst, isExplicitWsEndpoint, pageIsHttps, splitHostPort } from "./transport/ws";
+import { WebRtcStream, buildIceServers } from "./transport/webrtc";
 import {
   createSymmetricKeyMsg,
   decodeBase64,
@@ -54,6 +56,7 @@ import {
   PeerStore,
   accessToken,
   apiServer,
+  globalOptions,
   localOptions,
   myId,
   myName,
@@ -89,6 +92,28 @@ const LOGIN_MSG_PASSWORD_EMPTY = "Empty Password";
 const LOGIN_MSG_PASSWORD_WRONG = "Wrong Password";
 const LOGIN_MSG_2FA_WRONG = "Wrong 2FA Code";
 const REQUIRE_2FA = "2FA Required";
+// client.rs: how long a WebRTC attempt outranks an already-established relay
+const WEBRTC_PREFER_WINDOW_MS = 2500;
+const WEBRTC_ICE_RESEND_DELAY = 400;
+const MAX_PENDING_WEBRTC_ICE = 64;
+
+// Both transports expose the same surface (hbb_common::Stream).
+export interface Transport {
+  send(bytes: Uint8Array): void;
+  next(timeoutMs?: number): Promise<Uint8Array>;
+  close(): void;
+  setKey(key: Uint8Array): void;
+  readonly isSecured: boolean;
+  readonly bufferedAmount: number;
+  onClose: ((e: Error) => void) | null;
+}
+
+class WebRtcHandshakeError extends Error {
+  constructor(msg: string) {
+    super(msg);
+    this.name = "WebRtcHandshakeError";
+  }
+}
 
 export type Fields = Record<string, string>;
 
@@ -131,7 +156,10 @@ function jsonStr(v: unknown): string {
 export class Session {
   readonly id: string;
   private state: State = "idle";
-  private ws: WsStream | null = null;
+  private ws: Transport | null = null;
+  private streamType = "WebSocket";
+  private direct = false;
+  private stopIceBridge: (() => void) | null = null;
   private secured = false;
   private peerSignPk: Uint8Array | null = null;
   private hash: Hash | null = null;
@@ -248,6 +276,8 @@ export class Session {
     this.clipboardWatcher = null;
     this.fileTransfer.close();
     this.video.close();
+    this.stopIceBridge?.();
+    this.stopIceBridge = null;
     this.ws?.close();
     this.ws = null;
     this.insecureDecision?.(false);
@@ -280,6 +310,13 @@ export class Session {
     return s;
   }
 
+  // Rust get_webrtc_enabled(): local option "enable-webrtc". The web shell's
+  // checkbox treats unset as on, so do the same here.
+  private webrtcEnabled(): boolean {
+    if (localOptions.get("enable-webrtc") === "N") return false;
+    return typeof (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection === "function";
+  }
+
   private async run(): Promise<void> {
     this.abilities = await probeCodecs();
     this.state = "rendezvous";
@@ -287,71 +324,136 @@ export class Session {
     const idUrls = buildWsUrlCandidates(rsHost, "id", { secure: this.secureWs() });
     log.info(`connecting to rendezvous ${idUrls.join(" | ")} for ${this.id}`);
     const rs = await connectFirst(idUrls, CONNECT_TIMEOUT);
+
+    // client.rs should_create_webrtc_offerer: the offer rides in the punch
+    // request; under WebSocket transport the envelope declares ice_policy "all".
+    let offerer: WebRtcStream | null = null;
+    if (this.webrtcEnabled()) {
+      try {
+        const custom = globalOptions.get("ice-servers").split(",").map((x) => x.trim()).filter((x) => x.length > 0);
+        offerer = await WebRtcStream.createOffer(buildIceServers(custom), false);
+      } catch (e) {
+        log.warn("WebRTC offer creation failed; relay only", e);
+        offerer = null;
+      }
+    }
+
     let signedIdPk: Uint8Array = new Uint8Array();
     let relayServer = "";
     let uuid = "";
+    let answer = "";
+    const pendingIce: string[] = [];
+    let keepRs = false;
     try {
-      const resp = await this.punchHole(rs);
+      const resp = await this.punchHole(rs, offerer, pendingIce);
       if ("relay" in resp) {
         const rr = resp.relay;
         if (rr.refuseReason) throw new Error(rr.refuseReason);
         if (rr.union.case === "pk") signedIdPk = rr.union.value;
         relayServer = rr.relayServer;
         uuid = rr.uuid;
+        answer = rr.webrtcSdpAnswer;
       } else {
         const phr = resp.punch;
         signedIdPk = phr.pk;
         relayServer = phr.relayServer;
-        // Peer answered the punch request but we cannot punch from a browser:
-        // ask the rendezvous server to broker a relay session (request_relay).
-        rs.close();
-        const rr = await this.requestRelay(rsHost, relayServer, signedIdPk.length > 0);
-        if (rr.refuseReason) throw new Error(rr.refuseReason);
-        if (rr.relayServer) relayServer = rr.relayServer;
-        uuid = rr.uuid;
+        answer = phr.webrtcSdpAnswer;
       }
+      keepRs = !!(offerer && answer);
     } finally {
-      rs.close();
+      if (!keepRs) rs.close();
     }
-    if (this.isClosed()) return;
+    if (this.isClosed()) {
+      offerer?.close();
+      return;
+    }
 
-    this.state = "relay";
-    // Proxy mode: the same origin fronts /ws/relay, ignore the relay host the
-    // server named (it is the upstream's own address, unreachable via CORS-free path).
-    const relayTarget = isExplicitWsEndpoint(rsHost)
-      ? rsHost
-      : relayServer || relayServerOption() || splitHostPort(rsHost).host;
-    const relayUrls = buildWsUrlCandidates(relayTarget, "relay", { secure: this.secureWs() });
-    log.info(`connecting to relay ${relayUrls.join(" | ")}`);
-    const conn = await connectFirst(relayUrls, CONNECT_TIMEOUT);
+    // Relay leg (request_relay on a fresh rendezvous socket when the peer
+    // answered the punch instead of choosing relay), then create_relay.
+    const connectRelay = async (): Promise<WsStream> => {
+      let relay = relayServer;
+      let u = uuid;
+      if (!u) {
+        const rr = await this.requestRelay(rsHost, relay, signedIdPk.length > 0);
+        if (rr.refuseReason) throw new Error(rr.refuseReason);
+        if (rr.relayServer) relay = rr.relayServer;
+        u = rr.uuid;
+      }
+      return this.createRelay(rsHost, relay, u);
+    };
+
+    let conn: Transport;
+    let isWebrtc = false;
+    if (offerer && answer) {
+      let webrtcP: Promise<WebRtcStream>;
+      try {
+        await offerer.setRemoteEndpoint(answer);
+        for (const c of pendingIce.splice(0)) await offerer.addRemoteIceCandidate(c).catch((e) => log.warn("ice candidate rejected", e));
+        this.stopIceBridge = this.startIceBridge(rs, offerer);
+        webrtcP = offerer.waitConnected(Math.max(CONNECT_TIMEOUT, WEBRTC_PREFER_WINDOW_MS)).then(() => offerer!);
+      } catch (e) {
+        log.warn("WebRTC answer rejected; relay only", e);
+        offerer.close();
+        offerer = null;
+        rs.close();
+        webrtcP = Promise.reject(e);
+      }
+      const raced = await this.raceTransports(webrtcP, connectRelay());
+      conn = raced.conn;
+      isWebrtc = raced.isWebrtc;
+      this.direct = raced.direct;
+      this.streamType = isWebrtc ? "WebRTC" : "WebSocket";
+      if (!isWebrtc) {
+        this.stopIceBridge?.();
+        this.stopIceBridge = null;
+      }
+    } else {
+      offerer?.close();
+      conn = await connectRelay();
+      this.streamType = "WebSocket";
+      this.direct = false;
+    }
     if (this.isClosed()) {
       conn.close();
       return;
     }
-    this.ws = conn;
-    conn.onClose = (e) => {
-      if (this.state !== "closed") this.fail(e);
-    };
-    // create_relay: first message on the relay socket
-    const rr = create(RendezvousMessageSchema, {});
-    rr.union = {
-      case: "requestRelay",
-      value: create(RequestRelaySchema, {
-        licenceKey: serverKey(),
-        id: this.id,
-        uuid,
-        connType: this.connType,
-      }),
-    };
-    conn.send(toBinary(RendezvousMessageSchema, rr));
 
     this.state = "securing";
-    await this.secureConnection(conn, signedIdPk);
+    this.ws = conn;
+    conn.onClose = (e) => {
+      if (this.state !== "closed" && this.ws === conn) this.fail(e);
+    };
+    try {
+      await this.secureConnection(conn, signedIdPk, isWebrtc);
+    } catch (e) {
+      if (!(e instanceof WebRtcHandshakeError)) throw e;
+      // client.rs: a WebRTC identity failure falls back to a fresh relay leg
+      log.warn(`${e.message}; falling back to relay`);
+      conn.onClose = null;
+      conn.close();
+      this.stopIceBridge?.();
+      this.stopIceBridge = null;
+      uuid = "";
+      const relayConn = await connectRelay();
+      if (this.isClosed()) {
+        relayConn.close();
+        return;
+      }
+      this.ws = relayConn;
+      this.streamType = "WebSocket";
+      this.direct = false;
+      relayConn.onClose = (err) => {
+        if (this.state !== "closed" && this.ws === relayConn) this.fail(err);
+      };
+      await this.secureConnection(relayConn, signedIdPk, false);
+      conn = relayConn;
+    }
     if (this.isClosed()) return;
+    log.info(`connected via ${this.streamType}${this.direct ? " (direct)" : ""}`);
     this.host.emit("connection_ready", {
       secure: this.secured ? "true" : "false",
-      direct: "false",
-      stream_type: "WebSocket",
+      direct: this.direct ? "true" : "false",
+      stream_type: this.streamType,
     });
     if (this.peerSignPk) {
       this.host.emit("fingerprint", { fingerprint: pkToFingerprint(this.peerSignPk) });
@@ -367,7 +469,138 @@ export class Session {
     await this.msgLoop(conn);
   }
 
-  private async punchHole(rs: WsStream): Promise<{ relay: RelayResponse } | { punch: PunchHoleResponse }> {
+  // create_relay (client.rs): relay socket + first RequestRelay carrying the uuid
+  private async createRelay(rsHost: string, relayServer: string, uuid: string): Promise<WsStream> {
+    this.state = "relay";
+    const relayTarget = isExplicitWsEndpoint(rsHost)
+      ? rsHost
+      : relayServer || relayServerOption() || splitHostPort(rsHost).host;
+    const relayUrls = buildWsUrlCandidates(relayTarget, "relay", { secure: this.secureWs() });
+    log.info(`connecting to relay ${relayUrls.join(" | ")}`);
+    const conn = await connectFirst(relayUrls, CONNECT_TIMEOUT);
+    const rr = create(RendezvousMessageSchema, {});
+    rr.union = {
+      case: "requestRelay",
+      value: create(RequestRelaySchema, {
+        licenceKey: serverKey(),
+        id: this.id,
+        uuid,
+        connType: this.connType,
+      }),
+    };
+    conn.send(toBinary(RendezvousMessageSchema, rr));
+    return conn;
+  }
+
+  // client.rs race_transports_prefer_webrtc (relay-vs-WebRTC subset): a P2P
+  // WebRTC result wins immediately; a relay result is held for the prefer
+  // window in case WebRTC still connects; a TURN-relayed WebRTC result is not
+  // preferred over an established relay.
+  private async raceTransports(
+    webrtcP: Promise<WebRtcStream>,
+    relayP: Promise<WsStream>
+  ): Promise<{ conn: Transport; isWebrtc: boolean; direct: boolean }> {
+    type R<T> = { ok: true; s: T } | { ok: false; e: unknown };
+    const wrap = <T,>(p: Promise<T>): Promise<R<T>> => p.then((s) => ({ ok: true, s }) as R<T>, (e) => ({ ok: false, e }) as R<T>);
+    const w = wrap(webrtcP);
+    const r = wrap(relayP);
+    const takeWebrtc = async (s: WebRtcStream, relayRes: Promise<R<WsStream>>) => {
+      void relayRes.then((x) => x.ok && x.s.close());
+      const relayed = await s.isRelayed();
+      return { conn: s as Transport, isWebrtc: true, direct: !relayed };
+    };
+    const takeRelay = (s: WsStream, webrtcRes: Promise<R<WebRtcStream>>) => {
+      void webrtcRes.then((x) => x.ok && x.s.close());
+      return { conn: s as Transport, isWebrtc: false, direct: false };
+    };
+    const first = await Promise.race([w.then((x) => ({ which: "webrtc" as const, x })), r.then((x) => ({ which: "relay" as const, x }))]);
+    if (first.which === "webrtc") {
+      if (first.x.ok) {
+        const s = first.x.s;
+        if (!(await s.isRelayed())) return takeWebrtc(s, r);
+        // TURN-relayed: prefer the RustDesk relay if it shows up in time
+        const rr = await Promise.race([r, new Promise<null>((res) => setTimeout(() => res(null), WEBRTC_PREFER_WINDOW_MS))]);
+        if (rr && rr.ok) {
+          s.close();
+          return { conn: rr.s as Transport, isWebrtc: false, direct: false };
+        }
+        return takeWebrtc(s, r);
+      }
+      log.warn("WebRTC failed, waiting for relay", first.x.e);
+      const rr = await r;
+      if (rr.ok) return takeRelay(rr.s, w);
+      throw rr.e instanceof Error ? rr.e : new Error(String(rr.e));
+    }
+    if (first.x.ok) {
+      const relay = first.x.s;
+      const ww = await Promise.race([w, new Promise<null>((res) => setTimeout(() => res(null), WEBRTC_PREFER_WINDOW_MS))]);
+      if (ww && ww.ok && !(await ww.s.isRelayed())) {
+        relay.close();
+        return { conn: ww.s as Transport, isWebrtc: true, direct: true };
+      }
+      if (ww && ww.ok) ww.s.close();
+      return takeRelay(relay, w);
+    }
+    log.warn("relay failed, waiting for WebRTC", first.x.e);
+    const ww = await w;
+    if (ww.ok) return takeWebrtc(ww.s, r);
+    throw first.x.e instanceof Error ? first.x.e : new Error(String(first.x.e));
+  }
+
+  // client.rs spawn_webrtc_ice_bridge: trickle our candidates to the peer as
+  // IceCandidate{id, session_key, candidate} on the SAME rendezvous socket the
+  // punch went out on (its address is the return route the server uses), and
+  // feed the peer's candidates arriving there into the pc.
+  private startIceBridge(rs: WsStream, offerer: WebRtcStream): () => void {
+    let stopped = false;
+    const sendCandidate = (candidate: string) => {
+      if (stopped) return;
+      const msg = create(RendezvousMessageSchema, {});
+      msg.union = { case: "iceCandidate", value: create(IceCandidateSchema, { id: this.id, sessionKey: offerer.sessionKey, candidate }) };
+      try {
+        rs.send(toBinary(RendezvousMessageSchema, msg));
+      } catch (e) {
+        log.warn("ice candidate send failed", e);
+      }
+    };
+    offerer.onIceCandidate = (candidate) => {
+      sendCandidate(candidate);
+      // the server->peer hop may be UDP: one re-send, the remote ICE agent dedups
+      setTimeout(() => sendCandidate(candidate), WEBRTC_ICE_RESEND_DELAY);
+    };
+    void (async () => {
+      while (!stopped) {
+        let raw: Uint8Array;
+        try {
+          raw = await rs.next(0);
+        } catch {
+          break;
+        }
+        try {
+          const m = fromBinary(RendezvousMessageSchema, raw);
+          if (m.union.case === "iceCandidate") {
+            const ice = m.union.value;
+            if (ice.sessionKey === offerer.sessionKey && ice.candidate) {
+              await offerer.addRemoteIceCandidate(ice.candidate).catch((e) => log.warn("remote ice candidate rejected", e));
+            }
+          }
+        } catch (e) {
+          log.warn("bad rendezvous message on ice bridge", e);
+        }
+      }
+    })();
+    return () => {
+      stopped = true;
+      offerer.onIceCandidate = null;
+      rs.close();
+    };
+  }
+
+  private async punchHole(
+    rs: WsStream,
+    offerer: WebRtcStream | null,
+    pendingIce: string[]
+  ): Promise<{ relay: RelayResponse } | { punch: PunchHoleResponse }> {
     const req = create(RendezvousMessageSchema, {});
     req.union = {
       case: "punchHoleRequest",
@@ -379,6 +612,7 @@ export class Session {
         connType: this.connType,
         version: VERSION,
         forceRelay: true,
+        webrtcSdpOffer: offerer?.localEndpoint ?? "",
       }),
     };
     const bytes = toBinary(RendezvousMessageSchema, req);
@@ -405,8 +639,16 @@ export class Session {
           }
           case "relayResponse":
             return { relay: msg.union.value };
+          case "iceCandidate": {
+            // candidates can precede the answer; keep the newest (client.rs MAX_PENDING_WEBRTC_ICE)
+            const ice = msg.union.value;
+            if (offerer && ice.sessionKey === offerer.sessionKey && ice.candidate) {
+              if (pendingIce.length >= MAX_PENDING_WEBRTC_ICE) pendingIce.shift();
+              pendingIce.push(ice.candidate);
+            }
+            continue;
+          }
           default:
-            // KeyExchange / IceCandidate / others: irrelevant for relay-only
             continue;
         }
       }
@@ -453,7 +695,7 @@ export class Session {
 
   // Port of client.rs secure_connection (relay branch: never bail, fall back to
   // an unencrypted stream when identity cannot be verified).
-  private async secureConnection(conn: WsStream, signedIdPk: Uint8Array): Promise<void> {
+  private async secureConnection(conn: Transport, signedIdPk: Uint8Array, isWebrtc: boolean): Promise<void> {
     let signPk: Uint8Array | null = null;
     if (signedIdPk.length > 0) {
       const rsPk = safeDecodeBase64(serverKey() || RS_PUB_KEY);
@@ -482,12 +724,14 @@ export class Session {
     try {
       msg = fromBinary(MessageSchema, raw);
     } catch {
+      if (isWebrtc) throw new WebRtcHandshakeError("WebRTC handshake received a malformed message");
       log.error("Handshake failed: invalid message format");
       conn.send(toBinary(MessageSchema, create(MessageSchema, {})));
       this.secured = false;
       return;
     }
     if (msg.union.case !== "signedId") {
+      if (isWebrtc) throw new WebRtcHandshakeError("WebRTC handshake received an unexpected message type");
       log.error("Handshake failed: invalid message type");
       conn.send(toBinary(MessageSchema, create(MessageSchema, {})));
       this.secured = false;
@@ -495,6 +739,7 @@ export class Session {
     }
     const opened = signOpen(msg.union.value.id, signPk);
     if (!opened) {
+      if (isWebrtc) throw new WebRtcHandshakeError("WebRTC peer identity could not be verified (refusing unbound channel)");
       log.info("pk mismatch, fall back to non-secure");
       const m = create(MessageSchema, {});
       m.union = { case: "publicKey", value: create(PublicKeySchema, {}) };
@@ -503,17 +748,30 @@ export class Session {
       return;
     }
     let theirPk: Uint8Array | null = null;
+    let signedFp = "";
     try {
       const idpk = fromBinary(IdPkSchema, opened);
-      if (idpk.id === this.id) theirPk = idpk.pk;
+      if (idpk.id === this.id) {
+        theirPk = idpk.pk;
+        signedFp = idpk.dtlsFingerprint;
+      }
     } catch {
       /* fallthrough */
     }
     if (!theirPk || theirPk.length !== 32) {
+      if (isWebrtc) throw new WebRtcHandshakeError("WebRTC handshake id mismatch (possible MITM)");
       log.error("Handshake failed: sign failure");
       conn.send(toBinary(MessageSchema, create(MessageSchema, {})));
       this.secured = false;
       return;
+    }
+    if (isWebrtc) {
+      // client.rs: bind the DTLS channel to the verified peer identity. The peer
+      // signed its own certificate fingerprint; it must equal the one in the
+      // SDP we negotiated with. Fail closed.
+      const actual = (conn as WebRtcStream).remoteDtlsFingerprint();
+      if (!actual) throw new WebRtcHandshakeError("WebRTC DTLS fingerprint unavailable");
+      if (!signedFp || signedFp !== actual) throw new WebRtcHandshakeError("WebRTC DTLS fingerprint not bound to peer identity (possible MITM)");
     }
     const { asymmetricValue, symmetricValue, key } = createSymmetricKeyMsg(theirPk);
     const m = create(MessageSchema, {});
@@ -539,7 +797,7 @@ export class Session {
 
   // ---- message loop --------------------------------------------------------
 
-  private async msgLoop(conn: WsStream): Promise<void> {
+  private async msgLoop(conn: Transport): Promise<void> {
     for (;;) {
       if (this.isClosed()) return;
       let raw: Uint8Array;

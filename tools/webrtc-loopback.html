@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>web-core WebRTC loopback</title>
+<style>body{font:13px monospace;background:#111;color:#9f9;padding:8px} pre{white-space:pre-wrap}</style>
+</head>
+<body>
+<h3 style="color:#ddd">WebRTC transport loopback (offerer + answerer in one page)</h3>
+<pre id="log"></pre>
+<script src="../dist/rustdesk-web-core.js"></script>
+<script>
+const out = document.getElementById("log");
+const log = (...a) => { out.textContent += a.join(" ") + "\n"; };
+(async () => {
+  const { WebRtcStream, buildIceServers } = rdCore.webrtc;
+  const ice = [];
+  const t0 = performance.now();
+  const offerer = await WebRtcStream.createOffer(ice, false);
+  log("offer endpoint bytes:", offerer.localEndpoint.length, "sessionKey:", offerer.sessionKey.slice(0, 30) + "...");
+  const answerer = await WebRtcStream.createAnswer(ice, offerer.localEndpoint);
+  offerer.onIceCandidate = (c) => answerer.addRemoteIceCandidate(c).catch((e) => log("answerer addIce failed", e.message));
+  answerer.onIceCandidate = (c) => offerer.addRemoteIceCandidate(c).catch((e) => log("offerer addIce failed", e.message));
+  await offerer.setRemoteEndpoint(answerer.localEndpoint);
+  await Promise.all([offerer.waitConnected(15000), answerer.waitConnected(15000)]);
+  log(`connected in ${(performance.now() - t0).toFixed(0)} ms`);
+  log("offerer sees remote fp:", offerer.remoteDtlsFingerprint());
+  log("answerer local fp    :", answerer.localDtlsFingerprint());
+  log("fingerprints match   :", offerer.remoteDtlsFingerprint() === answerer.localDtlsFingerprint());
+  let ok = true;
+  for (const n of [0, 1, 100, 59999, 60000, 60001, 120000, 500000, 3 * 1024 * 1024]) {
+    const msg = new Uint8Array(n);
+    for (let i = 0; i < n; i++) msg[i] = (i * 31 + n) & 0xff;
+    const t = performance.now();
+    offerer.send(msg);
+    const got = await answerer.next(15000);
+    const same = got.length === n && got.every((b, i) => b === msg[i]);
+    ok = ok && same;
+    log(`size ${n}: ${same ? "ok" : "MISMATCH"} (${(performance.now() - t).toFixed(1)} ms)`);
+    // and back
+    answerer.send(msg);
+    const back = await offerer.next(15000);
+    const same2 = back.length === n && back.every((b, i) => b === msg[i]);
+    ok = ok && same2;
+    if (!same2) log(`size ${n} reverse: MISMATCH`);
+  }
+  // burst of small messages must arrive in order
+  for (let i = 0; i < 200; i++) offerer.send(new Uint8Array([i & 0xff, i >> 8]));
+  for (let i = 0; i < 200; i++) {
+    const m = await answerer.next(5000);
+    if (m[0] !== (i & 0xff) || m[1] !== i >> 8) { ok = false; log("order broken at", i); break; }
+  }
+  log("ordered burst: done");
+  offerer.close();
+  try { await answerer.next(3000); log("answerer did not observe close"); ok = false; } catch (e) { log("answerer observed close:", e.message); }
+  log(ok ? "LOOPBACK PASS" : "LOOPBACK FAIL");
+})().catch((e) => log("ERROR", e && e.stack || e));
+</script>
+</body>
+</html>

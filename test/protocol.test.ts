@@ -178,3 +178,28 @@ describe("clipboard", async () => {
     expect(textFromClipboards([cbs[0]] as never)).toBeNull();
   });
 });
+
+describe("webrtc transport helpers", async () => {
+  const { encodeEndpoint, decodeEndpoint, endpointDeclaresAllIce, fingerprintFromSdp, parseIceServer, buildIceServers, DEFAULT_ICE_SERVERS } = await import("../src/transport/webrtc");
+  it("round-trips the webrtc:// envelope", () => {
+    const ep = encodeEndpoint("offer", "v=0\r\n", false);
+    expect(ep.startsWith("webrtc://")).toBe(true);
+    expect(decodeEndpoint(ep)).toEqual({ type: "offer", sdp: "v=0\r\n", ice_policy: "all" });
+    expect(endpointDeclaresAllIce(ep)).toBe(true);
+    expect(endpointDeclaresAllIce(encodeEndpoint("offer", "v=0\r\n", true))).toBe(false);
+  });
+  it("finds the fingerprint like get_key_for_sdp", () => {
+    const session = "v=0\r\na=fingerprint:sha-256 AA:BB\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 CC:DD\r\n";
+    expect(fingerprintFromSdp(session)).toBe("sha-256 AA:BB");
+    const media = "v=0\r\nm=audio 9 RTP/AVP 0\r\na=fingerprint:sha-256 11:22\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 CC:DD\r\n";
+    expect(fingerprintFromSdp(media)).toBe("sha-256 CC:DD");
+    expect(fingerprintFromSdp("v=0\r\n")).toBeNull();
+  });
+  it("parses ICE server urls and always keeps a STUN entry", () => {
+    expect(parseIceServer("stun:stun.example.com:3478")).toEqual({ urls: "stun:stun.example.com:3478" });
+    expect(parseIceServer("turn://u:p@turn.example.com:3478")).toEqual({ urls: "turn:turn.example.com:3478", username: "u", credential: "p" });
+    expect(parseIceServer("turn:turn.example.com:3478")).toBeNull();
+    expect(buildIceServers(["turn://u:p@t:1"]).length).toBe(1 + DEFAULT_ICE_SERVERS.length);
+    expect(buildIceServers(["stun:s:1"]).length).toBe(1);
+  });
+});

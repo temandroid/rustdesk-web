@@ -6,6 +6,7 @@ import { initCrypto } from "./crypto";
 import { log } from "./log";
 import { VERSION } from "./version";
 import { sessions } from "./sessions";
+import { WebRtcStream, buildIceServers, fingerprintFromSdp } from "./transport/webrtc";
 
 interface Globals {
   init?: () => void;
@@ -13,7 +14,7 @@ interface Globals {
   setByName?: (name: string, arg?: unknown) => unknown;
   getByName?: (name: string, arg?: unknown) => string;
   onInitFinished?: () => void;
-  rdCore?: { version: string; ready: boolean };
+  rdCore?: { version: string; ready: boolean; webrtc?: unknown };
 }
 
 const g = globalThis as unknown as Globals;
@@ -47,7 +48,7 @@ g.init = () => {
       await initCrypto();
       await refreshCodecProbe();
       ready = true;
-      g.rdCore = { version: VERSION, ready: true };
+      g.rdCore = { version: VERSION, ready: true, webrtc: { WebRtcStream, buildIceServers, fingerprintFromSdp } };
       for (const [n, a] of pending.splice(0)) setByName(n, a);
       log.info(`rustdesk web core ${VERSION} ready`);
     } catch (e) {
@@ -75,4 +76,4 @@ globalThis.document?.addEventListener("fullscreenchange", () => {
   }
 });
 
-g.rdCore = { version: VERSION, ready: false };
+g.rdCore = { version: VERSION, ready: false, webrtc: { WebRtcStream, buildIceServers, fingerprintFromSdp } };
