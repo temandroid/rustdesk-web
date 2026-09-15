@@ -1,0 +1,8 @@
+node_modules
+dist
+src/proto
+proto/message.proto
+build-web.log
+*.log
+.git
+tools/devserver.local.json

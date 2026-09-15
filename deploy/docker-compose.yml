@@ -1,0 +1,30 @@
+# Example: web client next to rustdesk-server-pro, behind SWAG.
+#
+#   cp deploy/docker-compose.yml deploy/.env.example ...   (or add the service to
+#   the compose file that already runs hbbs/hbbr/swag)
+#
+# The container serves static files only. The RustDesk API and WebSocket
+# endpoints are proxied by SWAG on the same subdomain (deploy/swag/), which is
+# what makes the browser see one origin: the Pro API sends no CORS headers.
+services:
+  rustdesk-web:
+    # Build from the repo, or replace with `image:` once you publish one.
+    build:
+      context: https://github.com/quietlydismantled/rustdesk-web-core.git
+      args:
+        # Pin the RustDesk source the shell and protos are built from.
+        RUSTDESK_REF: master
+    container_name: rustdesk-web
+    restart: unless-stopped
+    environment:
+      RD_ID_SERVER: ${RD_WEB_HOST}            # e.g. rdweb.example.com
+      RD_API_SERVER: https://${RD_WEB_HOST}
+      RD_KEY: ${RD_KEY}                        # contents of id_ed25519.pub
+      # RD_ICE_SERVERS: turn://user:pass@turn.example.com:3478
+      # RD_FORCE_CONFIG: "true"
+    networks:
+      - swag
+
+networks:
+  swag:
+    external: true          # the network your SWAG container is on

@@ -203,3 +203,29 @@ describe("webrtc transport helpers", async () => {
     expect(buildIceServers(["stun:s:1"]).length).toBe(1);
   });
 });
+
+describe("runtime config (rd-config.js)", async () => {
+  const { applyRuntimeConfig, globalOptions } = await import("../src/config");
+  const mem = new Map<string, string>();
+  (globalThis as unknown as { localStorage: Storage }).localStorage = {
+    getItem: (k: string) => mem.get(k) ?? null,
+    setItem: (k: string, v: string) => void mem.set(k, String(v)),
+    removeItem: (k: string) => void mem.delete(k),
+    clear: () => mem.clear(),
+    key: () => null,
+    length: 0,
+  } as unknown as Storage;
+  it("seeds unset options and respects user values unless forced", () => {
+    const g = globalThis as unknown as { RD_CONFIG?: unknown };
+    globalOptions.set("custom-rendezvous-server", "user.example");
+    g.RD_CONFIG = { idServer: "rdweb.example.com", apiServer: "https://rdweb.example.com", key: "k=" };
+    applyRuntimeConfig();
+    expect(globalOptions.get("custom-rendezvous-server")).toBe("user.example");
+    expect(globalOptions.get("api-server")).toBe("https://rdweb.example.com");
+    expect(globalOptions.get("key")).toBe("k=");
+    g.RD_CONFIG = { idServer: "rdweb.example.com", force: true };
+    applyRuntimeConfig();
+    expect(globalOptions.get("custom-rendezvous-server")).toBe("rdweb.example.com");
+    delete g.RD_CONFIG;
+  });
+});

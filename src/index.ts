@@ -3,6 +3,7 @@
 // web_model.dart calls init() and waits for onInitFinished()).
 import { getByName, refreshCodecProbe, setByName } from "./bridge";
 import { initCrypto } from "./crypto";
+import { applyRuntimeConfig } from "./config";
 import { log } from "./log";
 import { VERSION } from "./version";
 import { sessions } from "./sessions";
@@ -45,6 +46,7 @@ g.getByName = (name: string, arg?: unknown) => getByName(name, arg ?? "");
 g.init = () => {
   void (async () => {
     try {
+      applyRuntimeConfig();
       await initCrypto();
       await refreshCodecProbe();
       ready = true;

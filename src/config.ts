@@ -295,3 +295,34 @@ export function isInputSourceLegacyAllowed(): boolean {
   const v = localOptions.get("input-source");
   return v === "" || v === "Input source 2";
 }
+
+// Deployment defaults served as /rd-config.js (see docker/10-rd-config.sh):
+//   window.RD_CONFIG = { idServer, apiServer, relayServer, key, iceServers, force }
+// Applied at init. Without `force`, only options the user has not set yet
+// are filled in, so a deployment can seed servers while people keep their
+// own changes.
+export interface RuntimeConfig {
+  idServer?: string;
+  apiServer?: string;
+  relayServer?: string;
+  key?: string;
+  iceServers?: string;
+  force?: boolean;
+}
+
+export function applyRuntimeConfig(): void {
+  const cfg = (globalThis as { RD_CONFIG?: RuntimeConfig }).RD_CONFIG;
+  if (!cfg || typeof cfg !== "object") return;
+  const pairs: Array<[string, string | undefined]> = [
+    ["custom-rendezvous-server", cfg.idServer],
+    ["api-server", cfg.apiServer],
+    ["relay-server", cfg.relayServer],
+    ["key", cfg.key],
+    ["ice-servers", cfg.iceServers],
+  ];
+  for (const [name, value] of pairs) {
+    if (typeof value !== "string" || value === "") continue;
+    if (cfg.force || globalOptions.get(name) === "") globalOptions.set(name, value);
+  }
+  log.info("runtime config applied", cfg.force ? "(forced)" : "(defaults)");
+}
