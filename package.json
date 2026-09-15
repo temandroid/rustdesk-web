@@ -33,6 +33,6 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/quietlydismantled/rustdesk-web-core"
+    "url": "https://github.com/quietlydismantled/rustdesk-web-client"
   }
 }
