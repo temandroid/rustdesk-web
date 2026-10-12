@@ -42,6 +42,15 @@ grep -q "$COMMIT" index.html || { echo "source link missing in index.html" >&2; 
 # Deployments render their own rd-config.js; ship an empty default.
 printf '// Rendered by the hosting server.\nwindow.RD_CONFIG = window.RD_CONFIG || {};\n' > rd-config.js
 cp "$ROOT/LICENSE" "$ROOT/NOTICE" .
+# Roboto (Apache-2.0) at the path the Flutter engine asks for under
+# fontFallbackBaseUrl (see web/flutter_bootstrap.js).
+ROBOTO=roboto/v20/KFOmCnqEu92Fr1Me5WZLCzYlKw.ttf
+ROBOTO_SHA256=017c0be9aaa6d0359737e1fa762ad304c0e0107927faff5a6c1f415c7f5244ed
+grep -q "$ROBOTO" main.dart.js || { echo "engine no longer asks for $ROBOTO; update the font" >&2; exit 1; }
+mkdir -p "fonts/$(dirname "$ROBOTO")"
+curl -fsSL -o "fonts/$ROBOTO" "https://fonts.gstatic.com/s/$ROBOTO"
+echo "$ROBOTO_SHA256  fonts/$ROBOTO" | sha256sum -c -
+cp "$ROOT/fonts/ROBOTO-LICENSE.txt" fonts/
 printf '{"commit":"%s","rustdesk":"%s","baseHref":"%s"}\n' "$COMMIT" "$REF" "$BASE_HREF" > build-info.json
 tar -czf "$ROOT/rustdesk-web.tar.gz" .
 cd "$ROOT"

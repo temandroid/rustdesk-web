@@ -13,6 +13,8 @@ Built together with, and derived from the open sources of:
     proto/rendezvous.proto is a copy of protos/rendezvous.proto.
   - rdev (rustdesk-org fork), https://github.com/rustdesk-org/rdev (MIT)
     tools/rdev/*.rs key code tables; license text in tools/rdev/LICENSE.
+  - Roboto font, https://github.com/googlefonts/roboto (Apache-2.0)
+    bundled by the release build under fonts/; license in fonts/ROBOTO-LICENSE.txt.
 
 "RustDesk" is a trademark of its owners. This project is not affiliated with
 or endorsed by them. Icons in web/ are original to this project.
