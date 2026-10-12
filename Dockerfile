@@ -10,7 +10,8 @@
 # variables rendered into /rd-config.js by docker/10-rd-config.sh.
 
 ARG RUSTDESK_REPO=https://github.com/rustdesk/rustdesk.git
-ARG RUSTDESK_REF=master
+# Keep in sync with RUSTDESK_REF (the shell this core was written against).
+ARG RUSTDESK_REF=851d2df88cc8ef7a8368f74e8b2e7254861ee00a
 ARG FLUTTER_VERSION=3.24.5
 
 # ---------------------------------------------------------------- core ----
@@ -43,7 +44,7 @@ COPY --from=core /src/rustdesk /src/rustdesk
 WORKDIR /src/rustdesk/flutter
 RUN flutter config --no-analytics >/dev/null 2>&1 || true \
  && flutter pub get \
- && flutter build web --release --web-renderer canvaskit --base-href /
+ && flutter build web --release --web-renderer canvaskit --no-web-resources-cdn --base-href /
 
 # --------------------------------------------------------------- serve ----
 FROM nginx:1.27-alpine

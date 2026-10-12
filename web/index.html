@@ -34,10 +34,15 @@
     .loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
     .loader { width: 64px; height: 64px; border: 6px solid #e0e0e0; border-top-color: #024eff; border-radius: 50%; animation: spin 1s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
+    /* AGPL-3.0 section 13: offer the source of the version being served. */
+    #rd-source { position: fixed; left: 6px; bottom: 4px; z-index: 10; font: 11px sans-serif; color: #888; opacity: .7; text-decoration: none; }
+    #rd-source:hover { opacity: 1; text-decoration: underline; }
   </style>
 </head>
 <body>
   <div class="loading"><div class="loader"></div></div>
+  <!-- __RD_SOURCE_URL__ is replaced with the exact commit by the release build. -->
+  <a id="rd-source" href="__RD_SOURCE_URL__" target="_blank" rel="noopener">Source (AGPL-3.0)</a>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

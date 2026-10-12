@@ -1,4 +1,26 @@
-# rustdesk web-core
+# rustdesk-web
+
+Browser client for a self-hosted RustDesk server, served from your own domain.
+It is the Flutter web shell of [RustDesk](https://github.com/rustdesk/rustdesk)
+plus the open TypeScript core from
+[rustdesk-web-core](https://github.com/quietlydismantled/rustdesk-web-core),
+whose history this repository keeps. Licensed under **AGPL-3.0-only**; see
+[NOTICE](NOTICE) for what comes from where.
+
+Changes in this fork:
+
+- upstream RustDesk pinned in [`RUSTDESK_REF`](RUSTDESK_REF) instead of `master`;
+- `scripts/build-release.sh` and CI that publish a static bundle
+  (`rustdesk-web.tar.gz`, base href `/web/`, no CDN resources) on every `v*` tag;
+- a "Source (AGPL-3.0)" link on the page pointing at the exact commit served;
+- original icons, the rdev MIT licence text, NOTICE.
+
+The hosting server renders `rd-config.js` (ID server, API server, key) and must
+proxy `/api`, `/ws/id` and `/ws/relay` on the same origin.
+
+---
+
+## Upstream README (rustdesk-web-core)
 
 Open TypeScript viewer core for the RustDesk Flutter web shell. RustDesk's own
 "Web Client V2 (Preview)" ships only the Dart half in the public repo; the JS

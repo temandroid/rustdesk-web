@@ -6,3 +6,7 @@ build-web.log
 tools/devserver.local.json
 *.log
 .DS_Store
+.build/
+dist-web/
+rustdesk-web.tar.gz
+rustdesk-web.tar.gz.sha256
