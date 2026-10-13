@@ -13,7 +13,10 @@ Changes in this fork:
 - `scripts/build-release.sh` and CI that publish a static bundle
   (`rustdesk-web.tar.gz`, base href `/web/`, no CDN resources) on every `v*` tag;
 - a "Source (AGPL-3.0)" link on the page pointing at the exact commit served;
-- original icons, the rdev MIT licence text, NOTICE.
+- original icons, the rdev MIT licence text, NOTICE;
+- Russian UI (`src/lang/ru.rs` of the pinned tree, `src/lang.ts`);
+- sound: Opus via WebCodecs `AudioDecoder` played through an AudioContext
+  (`src/audio.ts`, port of `client.rs` AudioHandler); "Mute" in the toolbar works.
 
 The hosting server renders `rd-config.js` (ID server, API server, key) and must
 proxy `/api`, `/ws/id` and `/ws/relay` on the same origin.
@@ -50,7 +53,7 @@ Scope of this MVP (relay-only):
   Needs a peer and an ID server built after RustDesk PR #15684 (September
   2026); older ones ignore the offer and the session stays on the relay.
 
-Not yet: audio, terminal, port forward, transfer resume.
+Not yet: terminal, port forward, transfer resume. (Audio: added in this fork.)
 
 ## Layout
 

@@ -77,6 +77,7 @@ import {
   type KeyFlags,
 } from "./input/keyboard";
 import { ClipboardWatcher, buildClipboardMessage, textFromClipboards } from "./clipboard";
+import { AudioPlayer, audioSupported } from "./audio";
 import { FileTransfer } from "./filetransfer";
 import { log } from "./log";
 
@@ -174,6 +175,7 @@ export class Session {
   private abilities: CodecAbilities = { vp8: true, vp9: true, av1: false, h264: false, h265: false };
   private unsupported = new Set<CodecName>();
   private video: VideoPipeline;
+  private audio = new AudioPlayer();
   private lastKeyframeRequest = new Map<number, number>();
   private qualityTimer: number | null = null;
   private lastDelay = 0;
@@ -276,6 +278,7 @@ export class Session {
     this.clipboardWatcher = null;
     this.fileTransfer.close();
     this.video.close();
+    this.audio.close();
     this.stopIceBridge?.();
     this.stopIceBridge = null;
     this.ws?.close();
@@ -892,6 +895,8 @@ export class Session {
         this.handleClipboards(u.value.clipboards);
         return true;
       case "audioFrame":
+        if (!this.isFileTransfer && !this.peer.getToggle("disable-audio")) this.audio.handleFrame(u.value.data);
+        return true;
       case "cliprdr":
       case "voiceCallRequest":
       case "voiceCallResponse":
@@ -960,7 +965,8 @@ export class Session {
         this.host.emit("chat_client_mode", { text: u.value.text });
         return true;
       case "audioFormat":
-        return true; // phase 2
+        if (!this.isFileTransfer) this.audio.handleFormat(u.value.sampleRate, u.value.channels);
+        return true;
       default:
         return true;
     }
@@ -1304,6 +1310,11 @@ export class Session {
     this.sendMisc(misc);
   }
 
+  // Local side of the "Mute" toggle; the peer is told via sendOption
+  setAudioMuted(muted: boolean): void {
+    this.audio.setMuted(muted);
+  }
+
   sendOption(option: OptionMessage): void {
     const misc = create(MiscSchema, {});
     misc.union = { case: "option", value: option };
@@ -1330,8 +1341,8 @@ export class Session {
     if (this.peer.getToggle("follow-remote-cursor")) msg.followRemoteCursor = yes;
     if (this.peer.getToggle("follow-remote-window")) msg.followRemoteWindow = yes;
     if (!viewOnly && this.peer.getToggle("lock-after-session-end")) msg.lockAfterSessionEnd = yes;
-    // No audio pipeline in the browser yet.
-    msg.disableAudio = yes;
+    // Ask for no audio when muted or when this browser cannot play it
+    if (!audioSupported() || this.peer.getToggle("disable-audio")) msg.disableAudio = yes;
     if (viewOnly || this.peer.getToggle("disable-clipboard")) msg.disableClipboard = yes;
     msg.supportedDecoding = this.supportedDecoding();
     return msg;

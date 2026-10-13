@@ -22,6 +22,7 @@ import { VERSION, getVersionNumber } from "./version";
 import { probeCodecs } from "./video/webcodecs";
 import { queryOnlines } from "./rendezvous";
 import { LANGS, translate } from "./lang";
+import { audioSupported } from "./audio";
 import { log } from "./log";
 
 type Json = Record<string, unknown>;
@@ -175,7 +176,8 @@ function sendToggleOption(name: string, on: boolean): void {
       opt.disableClipboard = v;
       break;
     case "disable-audio":
-      opt.disableAudio = on ? v : OptionMessage_BoolOption.Yes; // audio stays off in the browser
+      opt.disableAudio = audioSupported() ? v : OptionMessage_BoolOption.Yes;
+      current.setAudioMuted(on);
       break;
     default:
       return;
