@@ -34,6 +34,9 @@ import {
   OptionMessageSchema,
   OptionMessage_BoolOption,
   type OptionMessage,
+  OSLoginSchema,
+  TerminalSchema,
+  type TerminalResponse,
   type PeerInfo,
   PermissionInfo_Permission,
   PublicKeySchema,
@@ -79,6 +82,15 @@ import {
 import { ClipboardWatcher, buildClipboardMessage, textFromClipboards } from "./clipboard";
 import { AudioPlayer, audioSupported } from "./audio";
 import { FileTransfer } from "./filetransfer";
+import {
+  buildCloseTerminal,
+  buildOpenTerminal,
+  buildResizeTerminal,
+  buildTerminalInput,
+  terminalResponseEvent,
+  terminalServiceIdKey,
+  terminalSupportError,
+} from "./terminal";
 import { log } from "./log";
 
 // hbb_common::config
@@ -116,7 +128,9 @@ class WebRtcHandshakeError extends Error {
   }
 }
 
-export type Fields = Record<string, string>;
+// Most events carry strings only (flutter.rs push_event); terminal_response
+// carries native JSON ints/bools like flutter.rs push_event_.
+export type Fields = Record<string, string | number | boolean | number[]>;
 
 export interface SessionHost {
   emit(name: string, fields: Fields): void;
@@ -134,6 +148,8 @@ export interface SessionOptions {
   password: string; // raw password passed by the UI (may be empty)
   isSharedPassword: boolean;
   connType?: ConnType;
+  // client.rs LoginConfigHandler.is_terminal_admin (env IS_TERMINAL_ADMIN=Y at session_add)
+  isTerminalAdmin?: boolean;
 }
 
 type State =
@@ -190,6 +206,10 @@ export class Session {
   private serverKeyboardEnabled = true;
   private clipboardWatcher: ClipboardWatcher | null = null;
   readonly connType: ConnType;
+  readonly isTerminalAdmin: boolean;
+  // OS credentials from the terminal-admin login dialog (LoginRequest.os_login)
+  private osUsername = "";
+  private osPassword = "";
   readonly fileTransfer: FileTransfer;
   enableTrustedDevices = false;
 
@@ -197,6 +217,7 @@ export class Session {
     this.id = opts.id;
     this.rawPassword = opts.password;
     this.connType = opts.connType ?? ConnType.DEFAULT_CONN;
+    this.isTerminalAdmin = this.connType === ConnType.TERMINAL && !!opts.isTerminalAdmin;
     this.peer = new PeerStore(opts.id);
     this.fileTransfer = new FileTransfer({
       emit: (n, f) => this.host.emit(n, f),
@@ -241,6 +262,15 @@ export class Session {
 
   get isFileTransfer(): boolean {
     return this.connType === ConnType.FILE_TRANSFER;
+  }
+
+  get isTerminal(): boolean {
+    return this.connType === ConnType.TERMINAL;
+  }
+
+  // Neither file transfer nor terminal: the session carries video/audio/input.
+  private get isDefault(): boolean {
+    return this.connType === ConnType.DEFAULT_CONN;
   }
 
   // Kept as a method: TS control-flow narrowing of `this.state` does not reset
@@ -827,7 +857,7 @@ export class Session {
     const u = msg.union;
     switch (u.case) {
       case "videoFrame":
-        if (!this.isFileTransfer) this.video.handle(u.value);
+        if (this.isDefault) this.video.handle(u.value);
         return true;
       case "hash":
         this.handleHash(u.value);
@@ -836,7 +866,7 @@ export class Session {
         const lr = u.value;
         this.enableTrustedDevices = lr.enableTrustedDevices;
         if (lr.union.case === "error") this.handleLoginError(lr.union.value);
-        else if (lr.union.case === "peerInfo") this.handlePeerInfo(lr.union.value);
+        else if (lr.union.case === "peerInfo") return this.handlePeerInfo(lr.union.value);
         return true;
       }
       case "peerInfo":
@@ -895,7 +925,10 @@ export class Session {
         this.handleClipboards(u.value.clipboards);
         return true;
       case "audioFrame":
-        if (!this.isFileTransfer && !this.peer.getToggle("disable-audio")) this.audio.handleFrame(u.value.data);
+        if (this.isDefault && !this.peer.getToggle("disable-audio")) this.audio.handleFrame(u.value.data);
+        return true;
+      case "terminalResponse":
+        this.handleTerminalResponse(u.value);
         return true;
       case "cliprdr":
       case "voiceCallRequest":
@@ -965,7 +998,7 @@ export class Session {
         this.host.emit("chat_client_mode", { text: u.value.text });
         return true;
       case "audioFormat":
-        if (!this.isFileTransfer) this.audio.handleFormat(u.value.sampleRate, u.value.channels);
+        if (this.isDefault) this.audio.handleFormat(u.value.sampleRate, u.value.channels);
         return true;
       default:
         return true;
@@ -1022,6 +1055,12 @@ export class Session {
       p1 = this.peer.getHashedPassword() ?? this.host.siblingHashedPassword?.() ?? null;
     }
     this.hashedPassword = p1;
+    // client.rs handle_hash: terminal-as-admin asks for OS credentials first;
+    // the login goes out from login() once the dialog is answered.
+    if (this.isTerminal && this.isTerminalAdmin) {
+      this.msgbox(p1 ? "terminal-admin-login" : "terminal-admin-login-password", "", "");
+      return;
+    }
     let p2: Uint8Array = new Uint8Array();
     if (p1) {
       p2 = sha256(p1, hash.challenge);
@@ -1032,7 +1071,9 @@ export class Session {
     this.sendLogin(p2);
   }
 
-  login(password: string, remember: boolean): void {
+  login(password: string, remember: boolean, osUsername = "", osPassword = ""): void {
+    this.osUsername = osUsername;
+    this.osPassword = osPassword;
     if (!this.hash) {
       log.warn("login before hash");
       return;
@@ -1069,13 +1110,21 @@ export class Session {
       myId: myId(),
       myName: myName(),
       myPlatform: localOs(),
-      // client.rs get_option_message: no OptionMessage for file transfer
-      option: this.isFileTransfer ? undefined : this.optionMessage(true),
+      // client.rs get_option_message: none for file transfer; for a terminal
+      // only terminal_persistent, and only when on
+      option: this.loginOptionMessage(),
       sessionId: this.sessionId,
       version: VERSION,
       hwid: this.peer.getOption("trust-this-device") === "Y" ? sha256(localOptions.get("uuid") || "web") : new Uint8Array(),
     });
-    if (this.isFileTransfer) {
+    if (this.isTerminal) {
+      // client.rs create_login_msg: os_login is always present for TERMINAL
+      lr.osLogin = create(OSLoginSchema, { username: this.osUsername, password: this.osPassword });
+      lr.union = {
+        case: "terminal",
+        value: create(TerminalSchema, { serviceId: this.peer.getOption(terminalServiceIdKey(this.isTerminalAdmin)) }),
+      };
+    } else if (this.isFileTransfer) {
       lr.union = {
         case: "fileTransfer",
         value: create(FileTransferSchema, {
@@ -1104,7 +1153,25 @@ export class Session {
     }
   }
 
-  private handlePeerInfo(pi: PeerInfo): void {
+  private loginOptionMessage(): OptionMessage | undefined {
+    if (this.isFileTransfer) return undefined;
+    if (this.isTerminal) {
+      if (!this.peer.getToggle("terminal-persistent")) return undefined;
+      return create(OptionMessageSchema, { terminalPersistent: OptionMessage_BoolOption.Yes });
+    }
+    return this.optionMessage(true);
+  }
+
+  // Returns false when the session ends here (io_loop.rs handle_msg_from_peer).
+  private handlePeerInfo(pi: PeerInfo): boolean {
+    if (this.isTerminal) {
+      const err = terminalSupportError(pi.features?.terminal ?? false, pi.version);
+      if (err) {
+        this.msgbox(err.type, err.title, err.text);
+        this.close(false);
+        return false;
+      }
+    }
     this.peerInfo = pi;
     this.displays = pi.displays;
     this.state = "connected";
@@ -1134,11 +1201,39 @@ export class Session {
         resolutions: "[]",
         platform_additions: pi.platformAdditions,
       });
-      return;
+      return true;
+    }
+    if (this.isTerminal) {
+      // ui_session_interface.rs handle_peer_info: no display checks, no
+      // "waiting for image" box; peer_info makes terminal_model.dart onReady()
+      // send OpenTerminal.
+      this.peer.setInfo({
+        id: this.id,
+        username: pi.username,
+        hostname: pi.hostname,
+        platform: pi.platform,
+        alias: this.peer.getOption("alias"),
+        tags: [],
+        lastConnected: Date.now(),
+      });
+      if (this.remember && this.hashedPassword) this.peer.setHashedPassword(this.hashedPassword);
+      this.host.emit("peer_info", {
+        username: pi.username,
+        hostname: pi.hostname,
+        platform: pi.platform,
+        sas_enabled: pi.sasEnabled ? "true" : "false",
+        displays: displaysJson(pi.displays),
+        version: pi.version,
+        features: jsonStr({ privacy_mode: pi.features?.privacyMode ?? false }),
+        current_display: String(pi.currentDisplay >= 0 && pi.currentDisplay < pi.displays.length ? pi.currentDisplay : 0),
+        resolutions: resolutionsJson(pi.resolutions?.resolutions ?? []),
+        platform_additions: pi.platformAdditions,
+      });
+      return true;
     }
     if (pi.displays.length === 0) {
       this.msgbox("error", "Remote Error", "No Display");
-      return;
+      return true;
     }
     if (pi.currentDisplay >= 0 && pi.currentDisplay < pi.displays.length) {
       this.currentDisplay = pi.currentDisplay;
@@ -1176,6 +1271,42 @@ export class Session {
     });
     this.startQualityTimer();
     this.startClipboard();
+    return true;
+  }
+
+  // ---- terminal ------------------------------------------------------------
+
+  // io_loop.rs TerminalResponse arm: remember the persistent service id, then
+  // flutter.rs handle_terminal_response.
+  private handleTerminalResponse(resp: TerminalResponse): void {
+    if (resp.union.case === "opened") {
+      const o = resp.union.value;
+      if (o.success && o.serviceId) this.peer.setOption(terminalServiceIdKey(this.isTerminalAdmin), o.serviceId);
+    }
+    let ev;
+    try {
+      ev = terminalResponseEvent(resp);
+    } catch (e) {
+      log.warn("terminal data decode failed", e);
+      return;
+    }
+    if (ev) this.host.emit("terminal_response", ev);
+  }
+
+  openTerminal(terminalId: number, rows: number, cols: number): void {
+    this.sendMessage(buildOpenTerminal(terminalId, rows, cols));
+  }
+
+  sendTerminalInput(terminalId: number, data: string): void {
+    this.sendMessage(buildTerminalInput(terminalId, data));
+  }
+
+  resizeTerminal(terminalId: number, rows: number, cols: number): void {
+    this.sendMessage(buildResizeTerminal(terminalId, rows, cols));
+  }
+
+  closeTerminal(terminalId: number): void {
+    this.sendMessage(buildCloseTerminal(terminalId));
   }
 
   // ---- clipboard -----------------------------------------------------------

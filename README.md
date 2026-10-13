@@ -53,7 +53,12 @@ Scope of this MVP (relay-only):
   Needs a peer and an ID server built after RustDesk PR #15684 (September
   2026); older ones ignore the offer and the session stays on the relay.
 
-Not yet: terminal, port forward, transfer resume. (Audio: added in this fork.)
+- terminal (beta, as in upstream): the upstream web TerminalPage over a
+  TERMINAL connection; open/input/resize/close, zstd-compressed output,
+  persistent sessions (service id), "run as administrator" with OS login.
+  Needs a peer with the terminal feature (RustDesk 1.4.1+).
+
+Not yet: port forward, transfer resume. (Audio: added in this fork.)
 
 ## Layout
 

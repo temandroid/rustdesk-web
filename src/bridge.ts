@@ -74,7 +74,8 @@ function keyDebug(): boolean {
 
 // Session routing. The web shell passes no session ids, so calls are routed
 // by kind: view/input -> the remote (DEFAULT_CONN) session, file calls -> the
-// file-transfer session, everything else -> the session whose page is on top.
+// file-transfer session, terminal calls -> the terminal session, everything
+// else -> the session whose page is on top.
 function top(): Session | null {
   return sessions.top()?.session ?? null;
 }
@@ -83,6 +84,9 @@ function def(): Session | null {
 }
 function ft(): Session | null {
   return sessions.byType(ConnType.FILE_TRANSFER)?.session ?? null;
+}
+function term(): Session | null {
+  return sessions.byType(ConnType.TERMINAL)?.session ?? null;
 }
 function peerIdForOptions(): string {
   return (sessions.byType(ConnType.DEFAULT_CONN) ?? sessions.top())?.peerId ?? "";
@@ -110,11 +114,24 @@ function sessionAddSync(arg: unknown): string {
   const a = parseJson(arg);
   const id = str(a["id"]).trim();
   if (!id) return "Invalid ID";
-  if (flag(a["isViewCamera"]) || flag(a["isTerminal"])) {
-    return "Camera and terminal sessions are not supported in this web client build";
+  if (flag(a["isViewCamera"])) {
+    return "Camera sessions are not supported in this web client build";
   }
-  const connType = flag(a["isFileTransfer"]) ? ConnType.FILE_TRANSFER : ConnType.DEFAULT_CONN;
-  // One session per kind: a new remote or file session replaces its predecessor.
+  const isTerminal = flag(a["isTerminal"]);
+  const connType = isTerminal
+    ? ConnType.TERMINAL
+    : flag(a["isFileTransfer"])
+      ? ConnType.FILE_TRANSFER
+      : ConnType.DEFAULT_CONN;
+  // client.rs LoginConfigHandler::initialize reads IS_TERMINAL_ADMIN (set by
+  // setEnvTerminalAdmin() just before connect); flutter_ffi.rs session_add_sync
+  // clears it for every terminal session. A reconnect passes the flag along.
+  let isTerminalAdmin = false;
+  if (isTerminal) {
+    isTerminalAdmin = flag(a["isTerminalAdmin"]) || envVars.get("IS_TERMINAL_ADMIN") === "Y";
+    envVars.set("IS_TERMINAL_ADMIN", "");
+  }
+  // One session per kind: a new remote, file or terminal session replaces its predecessor.
   const prev = sessions.byType(connType);
   if (prev) {
     prev.session.close();
@@ -122,7 +139,7 @@ function sessionAddSync(arg: unknown): string {
   }
   const slot: SessionSlot = sessions.add(connType, id);
   slot.session = new Session(
-    { id, password: str(a["password"]), isSharedPassword: flag(a["is_shared_password"]), connType },
+    { id, password: str(a["password"]), isSharedPassword: flag(a["is_shared_password"]), connType, isTerminalAdmin },
     {
       emit: (name, fields) => sessions.emit(slot, name, fields),
       onVideoFrame: (display, frame) => sessions.videoFrame(slot, display, frame),
@@ -208,7 +225,7 @@ function setByNameImpl(name: string, arg: unknown): string {
     }
     case "login": {
       const a = parseJson(arg);
-      top()?.login(str(a["password"]), flag(a["remember"]));
+      top()?.login(str(a["password"]), flag(a["remember"]), str(a["os_username"]), str(a["os_password"]));
       return "";
     }
     case "send_2fa": {
@@ -228,9 +245,11 @@ function setByNameImpl(name: string, arg: unknown): string {
       const slot = sessions.top();
       if (!slot) return "";
       const isFt = slot.connType === ConnType.FILE_TRANSFER;
+      const isTerminal = slot.connType === ConnType.TERMINAL;
+      const isTerminalAdmin = slot.session.isTerminalAdmin;
       slot.session.close();
       sessions.remove(slot);
-      sessionAddSync(JSON.stringify({ id: slot.peerId, password: "", isFileTransfer: isFt }));
+      sessionAddSync(JSON.stringify({ id: slot.peerId, password: "", isFileTransfer: isFt, isTerminal, isTerminalAdmin }));
       top()?.start();
       return "";
     }
@@ -346,10 +365,42 @@ function setByNameImpl(name: string, arg: unknown): string {
       return "";
     case "option:toggle": {
       const key = str(arg);
+      if (key === "terminal-persistent") {
+        // client.rs toggle_option(OPTION_TERMINAL_PERSISTENT): terminal session only
+        const t = sessions.byType(ConnType.TERMINAL);
+        const ps = peerStoreFor(t?.peerId);
+        const on = !ps.getToggle(key);
+        ps.setToggle(key, on);
+        t?.session.sendOption(
+          create(OptionMessageSchema, { terminalPersistent: on ? OptionMessage_BoolOption.Yes : OptionMessage_BoolOption.No })
+        );
+        return "";
+      }
       const ps = peerStoreFor();
       const on = !ps.getToggle(key);
       ps.setToggle(key, on);
       sendToggleOption(key, on);
+      return "";
+    }
+    // ---- terminal (flutter/lib/web/bridge.dart sessionOpenTerminal & co) ----
+    case "open_terminal": {
+      const a = parseJson(arg);
+      term()?.openTerminal(num(a["terminal_id"]), num(a["rows"]), num(a["cols"]));
+      return "";
+    }
+    case "send_terminal_input": {
+      const a = parseJson(arg);
+      term()?.sendTerminalInput(num(a["terminal_id"]), str(a["data"]));
+      return "";
+    }
+    case "resize_terminal": {
+      const a = parseJson(arg);
+      term()?.resizeTerminal(num(a["terminal_id"]), num(a["rows"]), num(a["cols"]));
+      return "";
+    }
+    case "close_terminal": {
+      const a = parseJson(arg);
+      term()?.closeTerminal(num(a["terminal_id"]));
       return "";
     }
     case "option:session": {
@@ -491,10 +542,6 @@ function setByNameImpl(name: string, arg: unknown): string {
     case "input_os_password":
     case "account_auth":
     case "account_auth_cancel":
-    case "open_terminal":
-    case "send_terminal_input":
-    case "resize_terminal":
-    case "close_terminal":
       log.debug(`setByName ${name} not implemented (phase 2)`);
       return "";
     default:
