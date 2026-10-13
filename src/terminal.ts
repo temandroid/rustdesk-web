@@ -4,7 +4,7 @@
 //  - src/flutter.rs handle_terminal_response (incoming TerminalResponse ->
 //    "terminal_response" event for flutter/lib/models/terminal_model.dart).
 import { create } from "@bufbuild/protobuf";
-import { decompress as zstdDecompress } from "fzstd";
+import { Decompress } from "fzstd";
 import {
   CloseTerminalSchema,
   MessageSchema,
@@ -101,9 +101,10 @@ export function terminalResponseEvent(resp: TerminalResponse): TerminalEvent | n
     case "data": {
       const d = u.value;
       // terminal_service.rs compresses chunks above a threshold with
-      // hbb_common::compress (zstd) and sets `compressed`.
-      const bytes = d.compressed ? zstdDecompress(d.data) : d.data;
-      return { type: "data", terminal_id: d.terminalId, data: encode64(bytes) };
+      // hbb_common::compress (zstd) and sets `compressed`. Like
+      // hbb_common::compress::decompress, a failed or oversized frame gives "".
+      const bytes = d.compressed ? decompressBounded(d.data) : d.data;
+      return { type: "data", terminal_id: d.terminalId, data: bytes ? encode64(bytes) : "" };
     }
     case "closed":
       return { type: "closed", terminal_id: u.value.terminalId, exit_code: u.value.exitCode };
@@ -112,6 +113,34 @@ export function terminalResponseEvent(resp: TerminalResponse): TerminalEvent | n
     default:
       return null;
   }
+}
+
+// hbb_common::compress MAX_DECOMPRESSED_SIZE counterpart: a peer must not be
+// able to blow a few KB up into gigabytes inside the console's origin.
+export const MAX_DECOMPRESSED = 16 * 1024 * 1024;
+
+/** zstd decompression that stops at `limit` bytes; null when exceeded or invalid. */
+export function decompressBounded(data: Uint8Array, limit = MAX_DECOMPRESSED): Uint8Array | null {
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  const stream = new Decompress((chunk) => {
+    total += chunk.length;
+    if (total > limit) throw new Error("decompressed data too large");
+    parts.push(chunk);
+  });
+  try {
+    stream.push(data, true);
+  } catch {
+    return null;
+  }
+  if (parts.length === 1) return parts[0]!;
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
 }
 
 // io_loop.rs check_terminal_support: null when supported, otherwise the

@@ -21,6 +21,10 @@ Changes in this fork:
 The hosting server renders `rd-config.js` (ID server, API server, key) and must
 proxy `/api`, `/ws/id` and `/ws/relay` on the same origin.
 
+Known limitation: only Roboto and Roboto Mono are bundled. Text that needs
+other fallback fonts (emoji, CJK) shows as boxes, since the page loads no
+fonts from Google.
+
 ---
 
 ## Upstream README (rustdesk-web-core)
@@ -167,34 +171,11 @@ For production put `flutter/build/web` behind the same nginx as the API.
 
 ## Docker
 
-`Dockerfile` builds the whole thing (core, patched Flutter shell, nginx) and
-needs nothing installed locally except Docker:
-
-```
-docker build -t rustdesk-web-core .                       # RustDesk master
-docker build --build-arg RUSTDESK_REF=<tag-or-commit> -t rustdesk-web-core .
-docker run -p 8080:80 -e RD_ID_SERVER=rd.example.com -e RD_API_SERVER=https://rd.example.com -e RD_KEY=<pk> rustdesk-web-core
-```
-
-The container serves static files only. Environment variables are rendered
-into `/rd-config.js` at start (`docker/10-rd-config.sh`) and applied by the
-core as defaults for settings the user has not changed (`RD_FORCE_CONFIG=true`
-overrides on every load):
-
-| variable          | meaning                                                              |
-|-------------------|----------------------------------------------------------------------|
-| `RD_ID_SERVER`    | ID server host; domain form maps to `wss://host/ws/id` and `/ws/relay` |
-| `RD_API_SERVER`   | `https://...` origin of the RustDesk HTTP API (login, address book)   |
-| `RD_KEY`          | server public key (`id_ed25519.pub`)                                  |
-| `RD_RELAY_SERVER` | optional relay host                                                   |
-| `RD_ICE_SERVERS`  | optional comma separated `stun:` / `turn://user:pass@host:port` list |
-
-Because the Pro API sends no CORS headers, the web client must share an origin
-with the API and WebSocket endpoints. `deploy/swag/rustdesk-web.subdomain.conf`
-does that with SWAG: one subdomain, `/` to this container, `/api/` to hbbs
-21114, `/ws/id` to hbbs 21118, `/ws/relay` to hbbr 21119.
-`deploy/docker-compose.yml` is the matching service definition; set
-`RD_ID_SERVER`/`RD_API_SERVER` to that subdomain.
+Removed in this fork: the upstream Dockerfile built without the bundled fonts
+and the AGPL source link. Use `scripts/build-release.sh` (or the `v*` release
+tarball) and serve `dist-web/` behind your own server; it must render
+`rd-config.js`/the session config and proxy `/api`, `/ws/id`, `/ws/relay` on
+the same origin (rustdesk-api-srv does all of this).
 
 ## Smoke test (no browser, no Flutter)
 

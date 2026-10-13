@@ -25,6 +25,7 @@ import {
   terminalResponseEvent,
   terminalServiceIdKey,
   terminalSupportError,
+  decompressBounded,
 } from "../src/terminal";
 import { Session, type Fields } from "../src/session";
 import { initCrypto } from "../src/crypto";
@@ -311,5 +312,15 @@ describe("Session in TERMINAL mode", () => {
     expect(await feed(peerInfoMsg("1.3.9", false))).toBe(false);
     expect(events.at(-1)).toMatchObject({ name: "msgbox", fields: { title: "Remote terminal not supported" } });
     expect(isClosed()).toBe(true);
+  });
+});
+
+describe("bounded zstd for terminal data", () => {
+  it("stops at the limit and rejects invalid frames", () => {
+    const content = new Uint8Array(200).fill(65);
+    const frame = zstdRawFrame(content);
+    expect(Array.from(decompressBounded(frame, 1000) ?? [])).toEqual(Array.from(content));
+    expect(decompressBounded(frame, 100)).toBeNull();
+    expect(decompressBounded(Uint8Array.from([1, 2, 3, 4]))).toBeNull();
   });
 });

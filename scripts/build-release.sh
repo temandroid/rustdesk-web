@@ -11,7 +11,20 @@ ROOT=$PWD
 BASE_HREF=${BASE_HREF:-/web/}
 REF=$(tr -d '[:space:]' < RUSTDESK_REF)
 COMMIT=$(git rev-parse HEAD)
+if [ -z "${SOURCE_URL:-}" ] && ! git diff --quiet HEAD --; then
+  # The page must link to the exact source it was built from (AGPL-3.0 s.13)
+  echo "uncommitted changes: commit them or set SOURCE_URL explicitly" >&2
+  exit 1
+fi
 SOURCE_URL=${SOURCE_URL:-https://github.com/temandroid/rustdesk-web/tree/$COMMIT}
+case "$SOURCE_URL" in
+  https://*) ;;
+  *) echo "SOURCE_URL must be an https URL" >&2; exit 1 ;;
+esac
+if printf '%s' "$SOURCE_URL" | grep -q '["<>[:space:]]'; then
+  echo "SOURCE_URL contains characters not allowed in an HTML attribute" >&2
+  exit 1
+fi
 WORK=${WORK:-$ROOT/.build}
 
 mkdir -p "$WORK"
@@ -37,8 +50,13 @@ flutter build web --release --web-renderer canvaskit --no-web-resources-cdn --ba
 rm -rf "$ROOT/dist-web"
 cp -r build/web "$ROOT/dist-web"
 cd "$ROOT/dist-web"
-sed -i "s#__RD_SOURCE_URL__#${SOURCE_URL}#" index.html
-grep -q "$COMMIT" index.html || { echo "source link missing in index.html" >&2; exit 1; }
+# Literal replacement: '&', '#' or '\' in the URL must not act as sed syntax
+SOURCE_URL="$SOURCE_URL" node -e '
+  const fs = require("fs");
+  const html = fs.readFileSync("index.html", "utf8");
+  fs.writeFileSync("index.html", html.split("__RD_SOURCE_URL__").join(process.env.SOURCE_URL.replace(/&/g, "&amp;")));
+'
+if grep -q "__RD_SOURCE_URL__" index.html || ! grep -q "id=\"rd-source\" href=\"https://" index.html; then echo "source link missing in index.html" >&2; exit 1; fi
 # Deployments render their own rd-config.js; ship an empty default.
 printf '// Rendered by the hosting server.\nwindow.RD_CONFIG = window.RD_CONFIG || {};\n' > rd-config.js
 cp "$ROOT/LICENSE" "$ROOT/NOTICE" .

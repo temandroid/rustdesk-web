@@ -7,11 +7,14 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Builds run third-party code (npm, Flutter, pub): read-only token by default.
 permissions:
-  contents: write
+  contents: read
 
 env:
   FLUTTER_VERSION: 3.24.5
+  # From storage.googleapis.com/flutter_infra_release/releases/releases_linux.json
+  FLUTTER_SHA256: a7c82f551a9eae018e078f6bb186171e5a77920d35a3d75a61d9a593d0a9e4ae
 
 jobs:
   build:
@@ -25,6 +28,7 @@ jobs:
         run: |
           curl -fsSL -o /tmp/flutter.tar.xz \
             "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${FLUTTER_VERSION}-stable.tar.xz"
+          echo "${FLUTTER_SHA256}  /tmp/flutter.tar.xz" | sha256sum -c -
           tar -xf /tmp/flutter.tar.xz -C "$HOME"
           echo "$HOME/flutter/bin" >> "$GITHUB_PATH"
       - run: flutter --version
@@ -36,11 +40,23 @@ jobs:
           path: |
             rustdesk-web.tar.gz
             rustdesk-web.tar.gz.sha256
+
+  # Only publishing needs write access, and only for v* tags.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: rustdesk-web
       - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" rustdesk-web.tar.gz rustdesk-web.tar.gz.sha256 \
+            --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
             --notes "Static web client, base href /web/. Source: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/tree/${GITHUB_SHA}"

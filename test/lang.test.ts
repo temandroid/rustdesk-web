@@ -21,3 +21,9 @@ describe("lang (port of src/lang.rs)", () => {
     expect(translate("en", "{3} sessions", "")).toContain("3");
   });
 });
+
+describe("lang placeholders are literal", () => {
+  it("keeps $ patterns in the value as they are", () => {
+    expect(translate("en", "{$&$'} sessions", "")).toContain("$&$'");
+  });
+});

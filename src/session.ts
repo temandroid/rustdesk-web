@@ -1120,6 +1120,9 @@ export class Session {
     if (this.isTerminal) {
       // client.rs create_login_msg: os_login is always present for TERMINAL
       lr.osLogin = create(OSLoginSchema, { username: this.osUsername, password: this.osPassword });
+      // Not kept around once sent (client.rs passes them straight to send_login)
+      this.osUsername = "";
+      this.osPassword = "";
       lr.union = {
         case: "terminal",
         value: create(TerminalSchema, { serviceId: this.peer.getOption(terminalServiceIdKey(this.isTerminalAdmin)) }),

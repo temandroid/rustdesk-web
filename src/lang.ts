@@ -32,7 +32,7 @@ function extractPlaceholder(input: string): [string, string | null] {
 export function translate(locale: string, text: string, saved = localOptions.get("lang")): string {
   const lang = resolveLang(saved, locale || globalThis.navigator?.language || "");
   const [name, value] = extractPlaceholder(text);
-  const fill = (s: string) => (value !== null ? s.replace("{}", value) : s);
+  const fill = (s: string) => (value !== null ? s.replace("{}", () => value) : s);
   const v = (TABLES[lang] ?? TABLES.en!)[name];
   if (v) return fill(v);
   if (lang !== "en") {

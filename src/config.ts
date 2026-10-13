@@ -64,7 +64,24 @@ export const flutterLocalOptions = new Namespace("rd:flutter-local");
 // UserDefaultConfig
 export const userDefaultOptions = new Namespace("rd:user-default");
 // Config builtin options and env-var style overrides
-export const envVars = new Namespace("rd:envvar");
+// mainSetEnv/mainGetEnv: a process environment in the desktop client, so it
+// must not outlive the page or leak into other tabs (IS_TERMINAL_ADMIN).
+class MemoryVars {
+  private readonly vars = new Map<string, string>();
+  get(name: string): string {
+    return this.vars.get(name) ?? "";
+  }
+  set(name: string, value: string): void {
+    if (value === "") this.vars.delete(name);
+    else this.vars.set(name, value);
+  }
+}
+export const envVars = new MemoryVars();
+try {
+  globalThis.localStorage?.removeItem("rd:envvar");
+} catch {
+  /* storage unavailable */
+}
 
 // Rust UserDefaultConfig defaults (libs/hbb_common config.rs) that the UI
 // reads through option:session before a per-peer value exists.
