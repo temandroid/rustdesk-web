@@ -15,6 +15,8 @@ Built together with, and derived from the open sources of:
     tools/rdev/*.rs key code tables; license text in tools/rdev/LICENSE.
   - Roboto font, https://github.com/googlefonts/roboto (Apache-2.0)
     bundled by the release build under fonts/; license in fonts/ROBOTO-LICENSE.txt.
+  - Roboto Mono font, https://github.com/googlefonts/RobotoMono (SIL OFL 1.1)
+    bundled under fonts/ for the terminal; license in fonts/ROBOTO-MONO-OFL.txt.
 
 "RustDesk" is a trademark of its owners. This project is not affiliated with
 or endorsed by them. Icons in web/ are original to this project.

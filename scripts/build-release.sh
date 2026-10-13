@@ -51,6 +51,13 @@ mkdir -p "fonts/$(dirname "$ROBOTO")"
 curl -fsSL -o "fonts/$ROBOTO" "https://fonts.gstatic.com/s/$ROBOTO"
 echo "$ROBOTO_SHA256  fonts/$ROBOTO" | sha256sum -c -
 cp "$ROOT/fonts/ROBOTO-LICENSE.txt" fonts/
+# Roboto Mono (SIL OFL 1.1) for the terminal, at the path
+# lib/web/terminal_font.dart loads when window.rustdeskLocalFonts is set.
+ROBOTO_MONO_URL=https://raw.githubusercontent.com/googlefonts/RobotoMono/895ec691990d041dd727c7b5afa3ce56525d98e6/fonts/ttf/RobotoMono-Regular.ttf
+ROBOTO_MONO_SHA256=af0bff7599c3df3831755c16e39b3c496df74b8c8d8a1161b14dc8461be17cb4
+curl -fsSL -o fonts/RobotoMono-Regular.ttf "$ROBOTO_MONO_URL"
+echo "$ROBOTO_MONO_SHA256  fonts/RobotoMono-Regular.ttf" | sha256sum -c -
+cp "$ROOT/fonts/ROBOTO-MONO-OFL.txt" fonts/
 printf '{"commit":"%s","rustdesk":"%s","baseHref":"%s"}\n' "$COMMIT" "$REF" "$BASE_HREF" > build-info.json
 tar -czf "$ROOT/rustdesk-web.tar.gz" .
 cd "$ROOT"

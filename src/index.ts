@@ -16,12 +16,18 @@ interface Globals {
   getByName?: (name: string, arg?: unknown) => string;
   onInitFinished?: () => void;
   rdCore?: { version: string; ready: boolean; webrtc?: unknown };
+  rustdeskLocalFonts?: boolean;
 }
 
 const g = globalThis as unknown as Globals;
 
 // Capture the shell's callback assignments before Flutter boots.
 sessions.installHooks();
+
+// lib/web/terminal_font.dart: load Roboto Mono for the terminal from
+// fonts/RobotoMono-Regular.ttf (shipped by the release build) instead of
+// letting google_fonts fetch it from fonts.gstatic.com.
+g.rustdeskLocalFonts = true;
 
 
 let ready = false;
