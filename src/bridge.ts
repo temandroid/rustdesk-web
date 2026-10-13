@@ -21,7 +21,7 @@ import {
 import { VERSION, getVersionNumber } from "./version";
 import { probeCodecs } from "./video/webcodecs";
 import { queryOnlines } from "./rendezvous";
-import { translate } from "./lang";
+import { LANGS, translate } from "./lang";
 import { log } from "./log";
 
 type Json = Record<string, unknown>;
@@ -652,7 +652,7 @@ function getByNameImpl(name: string, arg: unknown): unknown {
     case "fav":
       return "[]";
     case "langs":
-      return JSON.stringify([["en", "English"]]);
+      return JSON.stringify(LANGS);
     case "translate": {
       const a = parseJson(arg);
       return translate(str(a["locale"]), str(a["text"]));
